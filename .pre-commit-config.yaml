@@ -1,0 +1,76 @@
+# .pre-commit-config.yaml
+# Go project pre-commit configuration
+# mv _go_pre-commit-config.yaml .pre-commit-config.yaml
+# 用法: cp .pre-commit-config.yaml <your-repo> && prek install
+
+# 设置默认安装的钩子类型
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  - repo: local
+    hooks:
+      - id: fmt
+        name: "gofmt"
+        description: "Format Go files with gofmt"
+        entry: gofmt
+        language: system
+        pass_filenames: true
+        args: ["-s", "-w"]
+        types: [go]
+
+      - id: goimports
+        name: goimports
+        description: "Format Go files and manage imports"
+        entry: goimports
+        language: system
+        pass_filenames: true
+        args: ["-w"]
+        types: [go]
+
+      - id: vet
+        name: "go vet"
+        description: "Run Go static analysis with go vet"
+        entry: go vet
+        language: system
+        pass_filenames: false
+        args: ["./..."]
+        types: [go]
+
+      - id: golangci-lint
+        name: golangci-lint
+        description: "Run golangci-lint for comprehensive linting"
+        entry: golangci-lint run
+        language: golang
+        pass_filenames: false
+        require_serial: true
+        args: ["--timeout=5m"]
+        types: [go]
+
+      - id: check
+        name: "go mod tidy"
+        description: "Validate and tidy go.mod and go.sum"
+        entry: go mod tidy
+        language: system
+        pass_filenames: false
+        args: []
+        stages: [pre-push] # 只在 push 时运行
+
+      - id: test
+        name: "go test"
+        description: "Run all Test* tests with coverage, force execution (no cache), verbose output"
+        entry: go test
+        language: system
+        pass_filenames: false
+        args: ["-v", "-count=1", "./...", "-run=^Test"]
+        stages: [pre-push] # 只在 push 时运行
+        types: [go]
+
+      - id: build
+        name: "go build"
+        description: "Build project to check for compilation errors"
+        entry: go build
+        language: system
+        pass_filenames: false
+        args: ["-v", "./..."]
+        stages: [pre-push] # 只在 push 时运行
+        types: [go]

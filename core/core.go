@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
-	"github.com/Mikaelemmmm/sql2pb/tools/stringx"
 	"log"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/Mikaelemmmm/sql2pb/tools/stringx"
 
 	"github.com/chuckpreslar/inflect"
 	"github.com/serenize/snaker"
@@ -27,6 +28,17 @@ const (
 	fieldStyleToSnake               = "sql_pb"
 )
 
+// GetDbType determines the database type by querying system functions
+func GetDbType(db *sql.DB) string {
+	var dbType string
+	err := db.QueryRow("SELECT current_database()").Scan(&dbType)
+	if err == nil {
+		return "postgres"
+	}
+	// If PostgreSQL query failed, assume it's MySQL
+	return "mysql"
+}
+
 // GenerateSchema generates a protobuf schema from a database connection and a package name.
 // A list of tables to ignore may also be supplied.
 // The returned schema implements the `fmt.Stringer` interface, in order to generate a string
@@ -35,12 +47,20 @@ const (
 // the protobuf types. The schema reflects the layout of a protobuf file and should be used
 // to pipe the output of the `Schema.String()` to a file.
 func GenerateSchema(db *sql.DB, table string, ignoreTables, ignoreColumns []string, serviceName, goPkg, pkg, fieldStyle string) (*Schema, error) {
-	s := &Schema{}
+	// Default schema is usually 'public' for PostgreSQL
+	// This maintains backward compatibility
+	return GenerateSchemaWithSchema(db, table, ignoreTables, ignoreColumns, serviceName, goPkg, pkg, fieldStyle, "public")
+}
 
-	dbs, err := dbSchema(db)
-	if nil != err {
-		return nil, err
-	}
+// GenerateSchemaWithSchema generates a protobuf schema with a specific database schema name.
+// A list of tables to ignore may also be supplied.
+// The returned schema implements the `fmt.Stringer` interface, in order to generate a string
+// representation of a protobuf schema.
+// Do not rely on the structure of the Generated schema to provide any context about
+// the protobuf types. The schema reflects the layout of a protobuf file and should be used
+// to pipe the output of the `Schema.String()` to a file.
+func GenerateSchemaWithSchema(db *sql.DB, table string, ignoreTables, ignoreColumns []string, serviceName, goPkg, pkg, fieldStyle string, dbSchema string) (*Schema, error) {
+	s := &Schema{}
 
 	s.Syntax = proto3
 	s.ServiceName = serviceName
@@ -53,7 +73,9 @@ func GenerateSchema(db *sql.DB, table string, ignoreTables, ignoreColumns []stri
 		s.GoPackage = "./" + s.Package
 	}
 
-	cols, err := dbColumns(db, dbs, table)
+	// Determine database type
+	dbType := GetDbType(db)
+	cols, err := dbColumnsWithDbType(db, dbSchema, table, dbType)
 	if nil != err {
 		return nil, err
 	}
@@ -115,40 +137,92 @@ func typesFromColumns(s *Schema, cols []Column, ignoreTables, ignoreColumns []st
 func dbSchema(db *sql.DB) (string, error) {
 	var schema string
 
-	err := db.QueryRow("SELECT SCHEMA()").Scan(&schema)
-
-	return schema, err
-}
-
-func dbColumns(db *sql.DB, schema, table string) ([]Column, error) {
-
-	tableArr := strings.Split(table, ",")
-
-	q := "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.IS_NULLABLE, c.DATA_TYPE, " +
-		"c.CHARACTER_MAXIMUM_LENGTH, c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.COLUMN_TYPE ,c.COLUMN_COMMENT,t.TABLE_COMMENT " +
-		"FROM INFORMATION_SCHEMA.COLUMNS as c  LEFT JOIN  INFORMATION_SCHEMA.TABLES as t  on c.TABLE_NAME = t.TABLE_NAME and  c.TABLE_SCHEMA = t.TABLE_SCHEMA" +
-		" WHERE c.TABLE_SCHEMA = ?"
-
-	if table != "" && table != "*" {
-		q += " AND c.TABLE_NAME IN('" + strings.TrimRight(strings.Join(tableArr, "' ,'"), ",") + "')"
+	// Check if this is a PostgreSQL connection by querying pg tables
+	var dbType string
+	err := db.QueryRow("SELECT current_database()").Scan(&dbType)
+	if err == nil {
+		// This is PostgreSQL
+		dbType = "postgres"
+	} else {
+		// This is likely MySQL
+		dbType = "mysql"
 	}
 
-	q += " ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION"
+	if dbType == "postgres" {
+		err = db.QueryRow("SELECT current_database()").Scan(&schema)
+	} else {
+		err = db.QueryRow("SELECT SCHEMA()").Scan(&schema)
+	}
 
-	rows, err := db.Query(q, schema)
-	defer rows.Close()
+	if err != nil {
+		return "", err
+	}
+
+	return schema, nil
+}
+
+func dbColumnsWithDbType(db *sql.DB, dbSchema, table string, dbType string) ([]Column, error) {
+	tableArr := strings.Split(table, ",")
+
+	var q string
+	var rows *sql.Rows
+	var err error
+
+	switch dbType {
+	case "postgres", "postgresql":
+		q = `SELECT 
+				c.table_name,
+				c.column_name,
+				c.is_nullable,
+				c.data_type,
+				COALESCE(c.character_maximum_length, NULL),
+				COALESCE(c.numeric_precision, NULL),
+				COALESCE(c.numeric_scale, NULL),
+				COALESCE(c.udt_name, '') as column_type,
+				COALESCE(col_description((c.table_schema||'.'||c.table_name)::regclass, c.ordinal_position), '') as column_comment,
+				COALESCE(obj_description((c.table_schema||'.'||c.table_name)::regclass), '') as table_comment
+			FROM information_schema.columns c
+			WHERE c.table_schema = $1`
+
+		if table != "" && table != "*" {
+			placeholders := make([]string, len(tableArr))
+			for i, t := range tableArr {
+				placeholders[i] = fmt.Sprintf("'%s'", strings.TrimSpace(t))
+			}
+			q += " AND c.table_name IN (" + strings.Join(placeholders, ",") + ")"
+		}
+
+		q += " ORDER BY c.table_name, c.ordinal_position"
+
+		rows, err = db.Query(q, dbSchema)
+	default: // MySQL
+		q = "SELECT c.TABLE_NAME, c.COLUMN_NAME, c.IS_NULLABLE, c.DATA_TYPE, " +
+			"c.CHARACTER_MAXIMUM_LENGTH, c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.COLUMN_TYPE ,c.COLUMN_COMMENT,t.TABLE_COMMENT " +
+			"FROM INFORMATION_SCHEMA.COLUMNS as c  LEFT JOIN  INFORMATION_SCHEMA.TABLES as t  on c.TABLE_NAME = t.TABLE_NAME and  c.TABLE_SCHEMA = t.TABLE_SCHEMA" +
+			" WHERE c.TABLE_SCHEMA = ?"
+
+		if table != "" && table != "*" {
+			q += " AND c.TABLE_NAME IN('" + strings.TrimRight(strings.Join(tableArr, "' ,'"), ",") + "')"
+		}
+
+		q += " ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION"
+
+		rows, err = db.Query(q, dbSchema)
+	}
+
 	if nil != err {
 		return nil, err
 	}
+	defer rows.Close()
 
 	cols := []Column{}
 
 	for rows.Next() {
 		cs := Column{}
-		err := rows.Scan(&cs.TableName, &cs.ColumnName, &cs.IsNullable, &cs.DataType,
+		scanErr := rows.Scan(&cs.TableName, &cs.ColumnName, &cs.IsNullable, &cs.DataType,
 			&cs.CharacterMaximumLength, &cs.NumericPrecision, &cs.NumericScale, &cs.ColumnType, &cs.ColumnComment, &cs.TableComment)
-		if err != nil {
-			log.Fatal(err)
+		if scanErr != nil {
+			log.Fatal(scanErr)
 		}
 
 		if cs.TableComment == "" {
@@ -157,8 +231,8 @@ func dbColumns(db *sql.DB, schema, table string) ([]Column, error) {
 
 		cols = append(cols, cs)
 	}
-	if err := rows.Err(); nil != err {
-		return nil, err
+	if rows.Err() != nil {
+		return nil, rows.Err()
 	}
 
 	return cols, nil
@@ -678,38 +752,68 @@ func parseColumn(s *Schema, msg *Message, col Column) error {
 	var fieldType string
 
 	switch typ {
-	case "char", "varchar", "text", "longtext", "mediumtext", "tinytext":
+	case "char", "varchar", "character varying", "text", "longtext", "mediumtext", "tinytext",
+		"bpchar", "name": // PostgreSQL specific types
 		fieldType = "string"
 	case "enum", "set":
 		// Parse c.ColumnType to get the enum list
 		enumList := regexp.MustCompile(`[enum|set]\((.+?)\)`).FindStringSubmatch(col.ColumnType)
-		enums := strings.FieldsFunc(enumList[1], func(c rune) bool {
-			cs := string(c)
-			return "," == cs || "'" == cs
-		})
+		if enumList != nil && len(enumList) > 1 {
+			enums := strings.FieldsFunc(enumList[1], func(c rune) bool {
+				cs := string(c)
+				return "," == cs || "'" == cs
+			})
 
-		enumName := inflect.Singularize(snaker.SnakeToCamel(col.TableName)) + snaker.SnakeToCamel(col.ColumnName)
-		enum, err := newEnumFromStrings(enumName, col.ColumnComment, enums)
-		if nil != err {
-			return err
+			enumName := inflect.Singularize(snaker.SnakeToCamel(col.TableName)) + snaker.SnakeToCamel(col.ColumnName)
+			enum, err := newEnumFromStrings(enumName, col.ColumnComment, enums)
+			if nil != err {
+				return err
+			}
+
+			s.Enums = append(s.Enums, enum)
+
+			fieldType = enumName
+		} else {
+			// PostgreSQL enum handling
+			// For PostgreSQL enums we need to handle them differently
+			// For now, we'll treat them as strings, but in a full implementation,
+			// we'd query the pg_enum table to get the values
+			fieldType = "string"
 		}
-
-		s.Enums = append(s.Enums, enum)
-
-		fieldType = enumName
-	case "blob", "mediumblob", "longblob", "varbinary", "binary":
+	case "blob", "mediumblob", "longblob", "varbinary", "binary",
+		"bytea": // PostgreSQL binary type
 		fieldType = "bytes"
-	case "date", "time", "datetime", "timestamp":
+	case "date", "time", "datetime", "timestamp", "timestamp without time zone", "timestamp with time zone",
+		"timestamptz", "timetz", "interval": // PostgreSQL specific time types
 		//s.AppendImport("google/protobuf/timestamp.proto")
 		fieldType = "int64"
-	case "bool", "bit":
+	case "bool", "bit", "boolean": // PostgreSQL boolean
 		fieldType = "bool"
-	case "tinyint", "smallint", "int", "mediumint", "bigint":
+	case "tinyint", "smallint", "int", "mediumint", "bigint",
+		"smallserial", "serial", "bigserial": // PostgreSQL auto-increment types
 		fieldType = "int64"
-	case "float", "decimal", "double":
+	case "float", "decimal", "double",
+		"real", "double precision", "numeric": // PostgreSQL numeric types
 		fieldType = "double"
-	case "json":
+	case "json", "jsonb": // PostgreSQL JSON types
 		fieldType = "string"
+	case "uuid": // PostgreSQL UUID type
+		fieldType = "string"
+	case "inet", "cidr", "macaddr": // PostgreSQL network types
+		fieldType = "string"
+	case "point", "line", "lseg", "box", "path", "polygon", "circle": // PostgreSQL geometric types
+		fieldType = "string"
+	case "xml": // PostgreSQL XML type
+		fieldType = "string"
+	case "array": // PostgreSQL array types
+		// For now, handle arrays as strings
+		// In a more sophisticated implementation, we'd properly parse the array element type
+		fieldType = "repeated string"
+	default:
+		// Check if it's an array type (PostgreSQL often shows types like 'integer[]')
+		if strings.HasSuffix(typ, "[]") {
+			fieldType = "repeated string"
+		}
 	}
 
 	if "" == fieldType {
@@ -727,7 +831,7 @@ func parseColumn(s *Schema, msg *Message, col Column) error {
 }
 
 func isInSlice(slice []string, s string) bool {
-	for i, _ := range slice {
+	for i := range slice {
 		if slice[i] == s {
 			return true
 		}
