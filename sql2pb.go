@@ -7,8 +7,7 @@ import (
 	"log"
 	"strings"
 
-	"github.com/Mikaelemmmm/sql2pb/core"
-
+	"github.com/Zephyruston/sql2pb/core"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 )

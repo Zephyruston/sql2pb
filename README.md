@@ -4,13 +4,11 @@ Generates a protobuf file from your mysql or postgresql database.
 
 ### Uses
 
-##### Tips:  If your operating system is windows, the default encoding of windows command line is "GBK", you need to change it to "UTF-8", otherwise the generated file will be messed up. 
-
-
+##### Tips: If your operating system is windows, the default encoding of windows command line is "GBK", you need to change it to "UTF-8", otherwise the generated file will be messed up.
 
 #### Use from the command line:
 
-`go install github.com/Mikaelemmmm/sql2pb@latest`
+`go install github.com/Zephyruston/sql2pb@latest`
 
 ```
 $ sql2pb -h
@@ -53,8 +51,6 @@ $ sql2pb -db_type mysql -db usercenter -go_package ./pb -host localhost -package
 $ sql2pb -db_type pg -db usercenter -schema public -go_package ./pb -host localhost -package pb -password root -port 5432 -service_name usersrv -user postgres > usersrv.proto
 ```
 
-
-
 #### Use as an imported library
 
 ```sh
@@ -78,11 +74,11 @@ func main() {
 	// For MySQL
 	dbType:= "mysql"
 	connStr := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", "root", "root", "127.0.0.1", 3306, "zero-demo")
-	
+
 	// For PostgreSQL
 	// dbType := "postgres"
 	// connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable", "localhost", 5432, "postgres", "root", "zero_demo")
-	
+
 	pkg := "my_package"
 	goPkg := "./my_package"
 	table:= "*"
@@ -107,4 +103,5 @@ func main() {
 ```
 
 #### Thanks for schemabuf
+
     schemabuf : https://github.com/mcos/schemabuf

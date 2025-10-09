@@ -9,8 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Mikaelemmmm/sql2pb/tools/stringx"
-
+	"github.com/Zephyruston/sql2pb/tools/stringx"
 	"github.com/chuckpreslar/inflect"
 	"github.com/serenize/snaker"
 )
