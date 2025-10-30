@@ -751,8 +751,8 @@ func parseColumn(s *Schema, msg *Message, col Column) error {
 	var fieldType string
 
 	switch typ {
-	case "char", "varchar", "character varying", "text", "longtext", "mediumtext", "tinytext",
-		"bpchar", "name": // PostgreSQL specific types
+	case "char", "character", "varchar", "character varying", "text", "longtext", "mediumtext", "tinytext",
+		"bpchar", "name", "char varying", "nchar", "nvarchar": // PostgreSQL specific types
 		fieldType = "string"
 	case "enum", "set":
 		// Parse c.ColumnType to get the enum list
