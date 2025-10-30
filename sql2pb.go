@@ -58,7 +58,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+		}
+	}()
 
 	ignoreTables := strings.Split(*ignoreTableStr, ",")
 	ignoreColumns := strings.Split(*ignoreColumnStr, ",")

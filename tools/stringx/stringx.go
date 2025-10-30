@@ -41,7 +41,7 @@ func (s String) Upper() string {
 
 // ReplaceAll calls the strings.ReplaceAll
 func (s String) ReplaceAll(old, new string) string {
-	return strings.Replace(s.source, old, new, -1)
+	return strings.ReplaceAll(s.source, old, new)
 }
 
 // Source returns the source string value
@@ -49,12 +49,16 @@ func (s String) Source() string {
 	return s.source
 }
 
-// Title calls the strings.Title
+// Title capitalizes the first letter of the string
 func (s String) Title() string {
 	if s.IsEmptyOrSpace() {
 		return s.source
 	}
-	return strings.Title(s.source)
+	runes := []rune(s.source)
+	if len(runes) > 0 {
+		runes[0] = unicode.ToUpper(runes[0])
+	}
+	return string(runes)
 }
 
 // ToCamel converts the input text into camel case

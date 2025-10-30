@@ -63,10 +63,10 @@ func GenerateSchemaWithSchema(db *sql.DB, table string, ignoreTables, ignoreColu
 
 	s.Syntax = proto3
 	s.ServiceName = serviceName
-	if "" != pkg {
+	if pkg != "" {
 		s.Package = pkg
 	}
-	if "" != goPkg {
+	if goPkg != "" {
 		s.GoPackage = goPkg
 	} else {
 		s.GoPackage = "./" + s.Package
@@ -133,33 +133,6 @@ func typesFromColumns(s *Schema, cols []Column, ignoreTables, ignoreColumns []st
 	return nil
 }
 
-func dbSchema(db *sql.DB) (string, error) {
-	var schema string
-
-	// Check if this is a PostgreSQL connection by querying pg tables
-	var dbType string
-	err := db.QueryRow("SELECT current_database()").Scan(&dbType)
-	if err == nil {
-		// This is PostgreSQL
-		dbType = "postgres"
-	} else {
-		// This is likely MySQL
-		dbType = "mysql"
-	}
-
-	if dbType == "postgres" {
-		err = db.QueryRow("SELECT current_database()").Scan(&schema)
-	} else {
-		err = db.QueryRow("SELECT SCHEMA()").Scan(&schema)
-	}
-
-	if err != nil {
-		return "", err
-	}
-
-	return schema, nil
-}
-
 func dbColumnsWithDbType(db *sql.DB, dbSchema, table string, dbType string) ([]Column, error) {
 	tableArr := strings.Split(table, ",")
 
@@ -212,7 +185,11 @@ func dbColumnsWithDbType(db *sql.DB, dbSchema, table string, dbType string) ([]C
 	if nil != err {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Error closing rows: %v", err)
+		}
+	}()
 
 	cols := []Column{}
 
@@ -297,11 +274,11 @@ func (s *Schema) AppendImport(imports string) {
 // String returns a string representation of a Schema.
 func (s *Schema) String() string {
 	buf := new(bytes.Buffer)
-	buf.WriteString(fmt.Sprintf("syntax = \"%s\";\n", s.Syntax))
+	fmt.Fprintf(buf, "syntax = \"%s\";\n", s.Syntax)
 	buf.WriteString("\n")
-	buf.WriteString(fmt.Sprintf("option go_package =\"%s\";\n", s.GoPackage))
+	fmt.Fprintf(buf, "option go_package =\"%s\";\n", s.GoPackage)
 	buf.WriteString("\n")
-	buf.WriteString(fmt.Sprintf("package %s;\n", s.Package))
+	fmt.Fprintf(buf, "package %s;\n", s.Package)
 
 	buf.WriteString("\n")
 	buf.WriteString("// ------------------------------------ \n")
@@ -327,7 +304,7 @@ func (s *Schema) String() string {
 		buf.WriteString("// ------------------------------------ \n\n")
 
 		for _, e := range s.Enums {
-			buf.WriteString(fmt.Sprintf("%s\n", e))
+			fmt.Fprintf(buf, "%s\n", e)
 		}
 	}
 
@@ -362,11 +339,11 @@ type Enum struct {
 func (e *Enum) String() string {
 	buf := new(bytes.Buffer)
 
-	buf.WriteString(fmt.Sprintf("// %s \n", e.Comment))
-	buf.WriteString(fmt.Sprintf("enum %s {\n", e.Name))
+	fmt.Fprintf(buf, "// %s \n", e.Comment)
+	fmt.Fprintf(buf, "enum %s {\n", e.Name)
 
 	for _, f := range e.Fields {
-		buf.WriteString(fmt.Sprintf("%s%s;\n", indent, f))
+		fmt.Fprintf(buf, "%s%s;\n", indent, f)
 	}
 
 	buf.WriteString("}\n")
@@ -448,8 +425,7 @@ type Message struct {
 
 // GenDefaultMessage gen default message
 func (m Message) GenDefaultMessage(buf *bytes.Buffer) {
-	mOrginName := m.Name
-	mOrginFields := m.Fields
+	originalName := m.Name
 
 	curFields := []MessageField{}
 	var filedTag int
@@ -458,229 +434,237 @@ func (m Message) GenDefaultMessage(buf *bytes.Buffer) {
 			continue
 		}
 		filedTag++
-		field.tag = filedTag
-		field.Name = stringx.From(field.Name).ToCamelWithStartLower()
+		// Create a copy of the field to avoid modifying original
+		newField := field
+		newField.tag = filedTag
+		newField.Name = stringx.From(newField.Name).ToCamelWithStartLower()
 		if m.Style == fieldStyleToSnake {
-			field.Name = stringx.From(field.Name).ToSnake()
+			newField.Name = stringx.From(newField.Name).ToSnake()
 		}
 
-		if field.Comment == "" {
-			field.Comment = field.Name
+		if newField.Comment == "" {
+			newField.Comment = newField.Name
 		}
-		curFields = append(curFields, field)
+		curFields = append(curFields, newField)
 	}
-	m.Fields = curFields
-	buf.WriteString(fmt.Sprintf("%s\n", m))
 
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	// Create a temporary message for output
+	tempMessage := Message{
+		Name:    originalName,
+		Comment: m.Comment,
+		Fields:  curFields,
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", tempMessage)
 }
 
 // GenRpcAddReqRespMessage gen add req message
 func (m Message) GenRpcAddReqRespMessage(buf *bytes.Buffer) {
-	mOrginName := m.Name
-	mOrginFields := m.Fields
+	originalName := m.Name
 
 	//req
-	m.Name = "Add" + mOrginName + "Req"
-	curFields := []MessageField{}
+	reqFields := []MessageField{}
 	var filedTag int
 	for _, field := range m.Fields {
 		if isInSlice([]string{"id", "create_time", "update_time", "version", "del_state", "delete_time"}, field.Name) {
 			continue
 		}
 		filedTag++
-		field.tag = filedTag
-		field.Name = stringx.From(field.Name).ToCamelWithStartLower()
+		// Create a copy of the field to avoid modifying original
+		newField := field
+		newField.tag = filedTag
+		newField.Name = stringx.From(newField.Name).ToCamelWithStartLower()
 		if m.Style == fieldStyleToSnake {
-			field.Name = stringx.From(field.Name).ToSnake()
+			newField.Name = stringx.From(newField.Name).ToSnake()
 		}
-		if field.Comment == "" {
-			field.Comment = field.Name
+		if newField.Comment == "" {
+			newField.Comment = newField.Name
 		}
-		curFields = append(curFields, field)
+		reqFields = append(reqFields, newField)
 	}
-	m.Fields = curFields
-	buf.WriteString(fmt.Sprintf("%s\n", m))
 
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	reqMessage := Message{
+		Name:    "Add" + originalName + "Req",
+		Comment: m.Comment,
+		Fields:  reqFields,
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", reqMessage)
 
 	//resp
-	m.Name = "Add" + mOrginName + "Resp"
-	m.Fields = []MessageField{}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
-
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
-
+	respMessage := Message{
+		Name:    "Add" + originalName + "Resp",
+		Comment: m.Comment,
+		Fields:  []MessageField{},
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", respMessage)
 }
 
 // GenRpcUpdateReqMessage gen add resp message
 func (m Message) GenRpcUpdateReqMessage(buf *bytes.Buffer) {
-	mOrginName := m.Name
-	mOrginFields := m.Fields
+	originalName := m.Name
 
-	m.Name = "Update" + mOrginName + "Req"
-	curFields := []MessageField{}
+	updateReqFields := []MessageField{}
 	var filedTag int
 	for _, field := range m.Fields {
 		if isInSlice([]string{"create_time", "update_time", "version", "del_state", "delete_time"}, field.Name) {
 			continue
 		}
 		filedTag++
-		field.tag = filedTag
-		field.Name = stringx.From(field.Name).ToCamelWithStartLower()
+		// Create a copy of the field to avoid modifying original
+		newField := field
+		newField.tag = filedTag
+		newField.Name = stringx.From(newField.Name).ToCamelWithStartLower()
 		if m.Style == fieldStyleToSnake {
-			field.Name = stringx.From(field.Name).ToSnake()
+			newField.Name = stringx.From(newField.Name).ToSnake()
 		}
-		if field.Comment == "" {
-			field.Comment = field.Name
+		if newField.Comment == "" {
+			newField.Comment = newField.Name
 		}
-		curFields = append(curFields, field)
+		updateReqFields = append(updateReqFields, newField)
 	}
-	m.Fields = curFields
-	buf.WriteString(fmt.Sprintf("%s\n", m))
 
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	updateReqMessage := Message{
+		Name:    "Update" + originalName + "Req",
+		Comment: m.Comment,
+		Fields:  updateReqFields,
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", updateReqMessage)
 
 	//resp
-	m.Name = "Update" + mOrginName + "Resp"
-	m.Fields = []MessageField{}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
-
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	updateRespMessage := Message{
+		Name:    "Update" + originalName + "Resp",
+		Comment: m.Comment,
+		Fields:  []MessageField{},
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", updateRespMessage)
 }
 
 // GenRpcDelReqMessage gen add resp message
 func (m Message) GenRpcDelReqMessage(buf *bytes.Buffer) {
-	mOrginName := m.Name
-	mOrginFields := m.Fields
+	originalName := m.Name
 
-	m.Name = "Del" + mOrginName + "Req"
-	m.Fields = []MessageField{
-		{Name: "id", Typ: "int64", tag: 1, Comment: "id"},
+	delReqMessage := Message{
+		Name:    "Del" + originalName + "Req",
+		Comment: m.Comment,
+		Fields: []MessageField{
+			{Name: "id", Typ: "int64", tag: 1, Comment: "id"},
+		},
+		Style: m.Style,
 	}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
-
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	fmt.Fprintf(buf, "%s\n", delReqMessage)
 
 	//resp
-	m.Name = "Del" + mOrginName + "Resp"
-	m.Fields = []MessageField{}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
-
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	delRespMessage := Message{
+		Name:    "Del" + originalName + "Resp",
+		Comment: m.Comment,
+		Fields:  []MessageField{},
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", delRespMessage)
 }
 
 // GenRpcGetByIdReqMessage gen add resp message
 func (m Message) GenRpcGetByIdReqMessage(buf *bytes.Buffer) {
-	mOrginName := m.Name
-	mOrginFields := m.Fields
+	originalName := m.Name
 
-	m.Name = "Get" + mOrginName + "ByIdReq"
-	m.Fields = []MessageField{
-		{Name: "id", Typ: "int64", tag: 1, Comment: "id"},
+	getByIdReqMessage := Message{
+		Name:    "Get" + originalName + "ByIdReq",
+		Comment: m.Comment,
+		Fields: []MessageField{
+			{Name: "id", Typ: "int64", tag: 1, Comment: "id"},
+		},
+		Style: m.Style,
 	}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
-
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	fmt.Fprintf(buf, "%s\n", getByIdReqMessage)
 
 	//resp
-	firstWord := strings.ToLower(string(m.Name[0]))
-	m.Name = "Get" + mOrginName + "ByIdResp"
+	firstWord := strings.ToLower(string(originalName[0]))
 
-	name := stringx.From(firstWord + mOrginName[1:]).ToCamelWithStartLower()
-	comment := stringx.From(firstWord + mOrginName[1:]).ToCamelWithStartLower()
+	name := stringx.From(firstWord + originalName[1:]).ToCamelWithStartLower()
+	comment := stringx.From(firstWord + originalName[1:]).ToCamelWithStartLower()
 	if m.Style == fieldStyleToSnake {
-		name = stringx.From(firstWord + mOrginName[1:]).ToSnake()
-		comment = stringx.From(firstWord + mOrginName[1:]).ToSnake()
+		name = stringx.From(firstWord + originalName[1:]).ToSnake()
+		comment = stringx.From(firstWord + originalName[1:]).ToSnake()
 	}
-	m.Fields = []MessageField{
-		{Typ: mOrginName, Name: name, tag: 1, Comment: comment},
-	}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
 
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	getByIdRespMessage := Message{
+		Name:    "Get" + originalName + "ByIdResp",
+		Comment: m.Comment,
+		Fields: []MessageField{
+			{Typ: originalName, Name: name, tag: 1, Comment: comment},
+		},
+		Style: m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", getByIdRespMessage)
 }
 
 // GenRpcSearchReqMessage gen add resp message
 func (m Message) GenRpcSearchReqMessage(buf *bytes.Buffer) {
-	mOrginName := m.Name
-	mOrginFields := m.Fields
+	originalName := m.Name
 
-	m.Name = "Search" + mOrginName + "Req"
-	curFields := []MessageField{
+	searchReqFields := []MessageField{
 		{Typ: "int64", Name: "page", tag: 1, Comment: "page"},
 		{Typ: "int64", Name: "limit", tag: 2, Comment: "limit"},
 	}
-	var filedTag = len(curFields)
+	var filedTag = len(searchReqFields)
 	for _, field := range m.Fields {
 		if isInSlice([]string{"version", "del_state", "delete_time"}, field.Name) {
 			continue
 		}
 		filedTag++
-		field.tag = filedTag
-
-		field.Name = stringx.From(field.Name).ToCamelWithStartLower()
+		// Create a copy of the field to avoid modifying original
+		newField := field
+		newField.tag = filedTag
+		newField.Name = stringx.From(newField.Name).ToCamelWithStartLower()
 		if m.Style == fieldStyleToSnake {
-			field.Name = stringx.From(field.Name).ToSnake()
+			newField.Name = stringx.From(newField.Name).ToSnake()
 		}
-		if field.Comment == "" {
-			field.Comment = field.Name
+		if newField.Comment == "" {
+			newField.Comment = newField.Name
 		}
-		curFields = append(curFields, field)
+		searchReqFields = append(searchReqFields, newField)
 	}
-	m.Fields = curFields
-	buf.WriteString(fmt.Sprintf("%s\n", m))
 
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	searchReqMessage := Message{
+		Name:    "Search" + originalName + "Req",
+		Comment: m.Comment,
+		Fields:  searchReqFields,
+		Style:   m.Style,
+	}
+	fmt.Fprintf(buf, "%s\n", searchReqMessage)
 
 	//resp
-	firstWord := strings.ToLower(string(m.Name[0]))
-	m.Name = "Search" + mOrginName + "Resp"
+	firstWord := strings.ToLower(string(originalName[0]))
 
-	name := stringx.From(firstWord + mOrginName[1:]).ToCamelWithStartLower()
-	comment := stringx.From(firstWord + mOrginName[1:]).ToCamelWithStartLower()
+	name := stringx.From(firstWord + originalName[1:]).ToCamelWithStartLower()
+	comment := stringx.From(firstWord + originalName[1:]).ToCamelWithStartLower()
 	if m.Style == fieldStyleToSnake {
-		name = stringx.From(firstWord + mOrginName[1:]).ToSnake()
-		comment = stringx.From(firstWord + mOrginName[1:]).ToSnake()
+		name = stringx.From(firstWord + originalName[1:]).ToSnake()
+		comment = stringx.From(firstWord + originalName[1:]).ToSnake()
 	}
 
-	m.Fields = []MessageField{
-		{Typ: "repeated " + mOrginName, Name: name, tag: 1, Comment: comment},
+	searchRespMessage := Message{
+		Name:    "Search" + originalName + "Resp",
+		Comment: m.Comment,
+		Fields: []MessageField{
+			{Typ: "repeated " + originalName, Name: name, tag: 1, Comment: comment},
+		},
+		Style: m.Style,
 	}
-	buf.WriteString(fmt.Sprintf("%s\n", m))
-
-	//reset
-	m.Name = mOrginName
-	m.Fields = mOrginFields
+	fmt.Fprintf(buf, "%s\n", searchRespMessage)
 }
 
 // String returns a string representation of a Message.
 func (m Message) String() string {
 	var buf bytes.Buffer
 
-	buf.WriteString(fmt.Sprintf("message %s {\n", m.Name))
+	fmt.Fprintf(&buf, "message %s {\n", m.Name)
 	for _, f := range m.Fields {
-		buf.WriteString(fmt.Sprintf("%s%s; //%s\n", indent, f, f.Comment))
+		fmt.Fprintf(&buf, "%s%s; //%s\n", indent, f, f.Comment)
 	}
 	buf.WriteString("}\n")
 
@@ -757,10 +741,10 @@ func parseColumn(s *Schema, msg *Message, col Column) error {
 	case "enum", "set":
 		// Parse c.ColumnType to get the enum list
 		enumList := regexp.MustCompile(`[enum|set]\((.+?)\)`).FindStringSubmatch(col.ColumnType)
-		if enumList != nil && len(enumList) > 1 {
+		if len(enumList) > 1 {
 			enums := strings.FieldsFunc(enumList[1], func(c rune) bool {
 				cs := string(c)
-				return "," == cs || "'" == cs
+				return cs == "," || cs == "'"
 			})
 
 			enumName := inflect.Singularize(snaker.SnakeToCamel(col.TableName)) + snaker.SnakeToCamel(col.ColumnName)
@@ -815,7 +799,7 @@ func parseColumn(s *Schema, msg *Message, col Column) error {
 		}
 	}
 
-	if "" == fieldType {
+	if fieldType == "" {
 		return fmt.Errorf("no compatible protobuf type found for `%s`. column: `%s`.`%s`", col.DataType, col.TableName, col.ColumnName)
 	}
 
